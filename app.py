@@ -1,121 +1,166 @@
 import streamlit as st
 from pymongo import MongoClient
 import pandas as pd
+import plotly.express as px
 import json
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
+# --------------------------------------------------
+# CONFIGURACIÓN
+# --------------------------------------------------
 st.set_page_config(
-    page_title="MongoDB Sample Supplies",
+    page_title="Supply Sales Dashboard",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Dashboard - Sample Supplies")
+st.title("📦 Supply Sales Dashboard")
+st.caption("MongoDB Atlas + Streamlit Analytics App")
 
-# -------------------------------------------------
-# CONEXIÓN
-# -------------------------------------------------
+# --------------------------------------------------
+# CONEXIÓN MONGODB
+# --------------------------------------------------
 @st.cache_resource
 def init_connection():
-    mongo_uri = st.secrets["mongo"]["uri"]
-    return MongoClient(mongo_uri)
+    return MongoClient(st.secrets["mongo"]["uri"])
 
 client = init_connection()
+collection = client["sample_supplies"]["sales"]
 
-db = client["sample_supplies"]
-collection = db["sales"]
-
-# -------------------------------------------------
-# LIMPIEZA DATAFRAME (FIX ARROW)
-# -------------------------------------------------
+# --------------------------------------------------
+# LIMPIEZA DATAFRAME
+# --------------------------------------------------
 def clean_dataframe(df):
 
     for col in df.columns:
-
-        # convertir listas o dicts a string JSON
         if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
-            df[col] = df[col].apply(
-                lambda x: json.dumps(x, default=str)
-            )
+            df[col] = df[col].apply(lambda x: json.dumps(x, default=str))
 
     return df
 
 
-# -------------------------------------------------
+# --------------------------------------------------
 # LOAD DATA
-# -------------------------------------------------
+# --------------------------------------------------
 @st.cache_data
 def load_data():
 
-    data = list(collection.find({}, {"_id": 0}).limit(500))
-
-    if len(data) == 0:
-        return pd.DataFrame()
+    data = list(collection.find({}, {"_id": 0}).limit(1000))
 
     df = pd.DataFrame(data)
 
     df = clean_dataframe(df)
+
+    df["saleDate"] = pd.to_datetime(df["saleDate"])
 
     return df
 
 
 df = load_data()
 
-if df.empty:
-    st.error("No hay datos")
-    st.stop()
-
-# -------------------------------------------------
-# VALIDACIÓN
-# -------------------------------------------------
-required_columns = ["storeLocation", "purchaseMethod"]
-
-missing = [c for c in required_columns if c not in df.columns]
-
-if missing:
-    st.error(f"Columnas faltantes: {missing}")
-    st.write(df.columns)
-    st.stop()
-
-# -------------------------------------------------
-# FILTROS
-# -------------------------------------------------
+# --------------------------------------------------
+# SIDEBAR FILTROS
+# --------------------------------------------------
 st.sidebar.header("🔎 Filtros")
 
-stores = df["storeLocation"].dropna().unique()
-
-selected_store = st.sidebar.selectbox(
+store = st.sidebar.multiselect(
     "Tienda",
-    sorted(stores)
+    df["storeLocation"].unique(),
+    default=df["storeLocation"].unique()
 )
 
-filtered_df = df[df["storeLocation"] == selected_store]
+date_range = st.sidebar.date_input(
+    "Rango de fechas",
+    [df["saleDate"].min(), df["saleDate"].max()]
+)
 
-# -------------------------------------------------
+filtered_df = df[
+    (df["storeLocation"].isin(store)) &
+    (df["saleDate"].dt.date >= date_range[0]) &
+    (df["saleDate"].dt.date <= date_range[1])
+]
+
+# --------------------------------------------------
 # KPIs
-# -------------------------------------------------
-col1, col2, col3 = st.columns(3)
+# --------------------------------------------------
+st.subheader("📊 KPIs Ejecutivos")
 
-col1.metric("Ventas", len(filtered_df))
+c1, c2, c3, c4 = st.columns(4)
 
-col2.metric(
-    "Métodos de compra",
-    filtered_df["purchaseMethod"].nunique()
-)
-
-col3.metric(
-    "Registros totales",
-    len(df)
-)
+c1.metric("Ventas Totales", len(filtered_df))
+c2.metric("Tiendas Activas", filtered_df["storeLocation"].nunique())
+c3.metric("Métodos Compra", filtered_df["purchaseMethod"].nunique())
+c4.metric("Registros Dataset", len(df))
 
 st.divider()
 
-# -------------------------------------------------
-# DATAFRAME (YA NO FALLA)
-# -------------------------------------------------
-st.subheader("📋 Ventas")
+# --------------------------------------------------
+# GRÁFICOS
+# --------------------------------------------------
+
+col1, col2 = st.columns(2)
+
+# Ventas por tienda
+sales_store = (
+    filtered_df["storeLocation"]
+    .value_counts()
+    .reset_index()
+)
+
+sales_store.columns = ["Tienda", "Ventas"]
+
+fig_store = px.bar(
+    sales_store,
+    x="Tienda",
+    y="Ventas",
+    title="Ventas por Tienda"
+)
+
+col1.plotly_chart(fig_store, use_container_width=True)
+
+# Métodos de compra
+purchase_method = (
+    filtered_df["purchaseMethod"]
+    .value_counts()
+    .reset_index()
+)
+
+purchase_method.columns = ["Metodo", "Cantidad"]
+
+fig_method = px.pie(
+    purchase_method,
+    names="Metodo",
+    values="Cantidad",
+    title="Método de Compra"
+)
+
+col2.plotly_chart(fig_method, use_container_width=True)
+
+# --------------------------------------------------
+# TENDENCIA TEMPORAL
+# --------------------------------------------------
+st.subheader("📈 Tendencia de Ventas")
+
+trend = (
+    filtered_df
+    .groupby(filtered_df["saleDate"].dt.date)
+    .size()
+    .reset_index(name="Ventas")
+)
+
+fig_trend = px.line(
+    trend,
+    x="saleDate",
+    y="Ventas",
+    markers=True,
+    title="Ventas en el Tiempo"
+)
+
+st.plotly_chart(fig_trend, use_container_width=True)
+
+# --------------------------------------------------
+# TABLA FINAL
+# --------------------------------------------------
+st.subheader("📋 Detalle de Ventas")
 
 st.dataframe(
     filtered_df,
@@ -123,20 +168,4 @@ st.dataframe(
     hide_index=True
 )
 
-# -------------------------------------------------
-# GRÁFICO
-# -------------------------------------------------
-st.subheader("📈 Método de Compra")
-
-chart = (
-    filtered_df["purchaseMethod"]
-    .value_counts()
-)
-
-st.bar_chart(chart)
-
-# -------------------------------------------------
-# DEBUG
-# -------------------------------------------------
-with st.expander("Debug"):
-    st.write(df.dtypes)
+st.success("✅ Dashboard conectado correctamente a MongoDB Atlas")
