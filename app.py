@@ -43,6 +43,19 @@ def load_data():
 
 df = load_data()
 
+if df.empty:
+    st.error("No se cargaron datos.")
+    st.stop()
+
+required_columns = ["storeLocation", "purchaseMethod"]
+
+missing = [c for c in required_columns if c not in df.columns]
+
+if missing:
+    st.error(f"Columnas faltantes: {missing}")
+    st.write(df.columns)
+    st.stop()
+
 # -----------------------------
 # SIDEBAR FILTROS
 # -----------------------------
