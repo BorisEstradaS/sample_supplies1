@@ -1,31 +1,26 @@
 import streamlit as st
 from pymongo import MongoClient
 import pandas as pd
+import json
 
 # -------------------------------------------------
-# CONFIGURACIÓN GENERAL
+# CONFIG
 # -------------------------------------------------
 st.set_page_config(
-    page_title="MongoDB Sample Supplies Dashboard",
+    page_title="MongoDB Sample Supplies",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Dashboard - Sample Supplies (MongoDB Atlas)")
+st.title("📦 Dashboard - Sample Supplies")
 
 # -------------------------------------------------
-# CONEXIÓN A MONGODB
+# CONEXIÓN
 # -------------------------------------------------
 @st.cache_resource
 def init_connection():
-    if "mongo" not in st.secrets:
-        st.error("❌ Secrets de MongoDB no configurados")
-        st.stop()
-
     mongo_uri = st.secrets["mongo"]["uri"]
-    client = MongoClient(mongo_uri)
-    return client
-
+    return MongoClient(mongo_uri)
 
 client = init_connection()
 
@@ -33,7 +28,23 @@ db = client["sample_supplies"]
 collection = db["sales"]
 
 # -------------------------------------------------
-# CARGA DE DATOS
+# LIMPIEZA DATAFRAME (FIX ARROW)
+# -------------------------------------------------
+def clean_dataframe(df):
+
+    for col in df.columns:
+
+        # convertir listas o dicts a string JSON
+        if df[col].apply(lambda x: isinstance(x, (list, dict))).any():
+            df[col] = df[col].apply(
+                lambda x: json.dumps(x, default=str)
+            )
+
+    return df
+
+
+# -------------------------------------------------
+# LOAD DATA
 # -------------------------------------------------
 @st.cache_data
 def load_data():
@@ -45,36 +56,38 @@ def load_data():
 
     df = pd.DataFrame(data)
 
+    df = clean_dataframe(df)
+
     return df
 
 
 df = load_data()
 
-# -------------------------------------------------
-# VALIDACIONES (ANTI-CRASH)
-# -------------------------------------------------
 if df.empty:
-    st.error("❌ No se cargaron datos desde MongoDB")
+    st.error("No hay datos")
     st.stop()
 
+# -------------------------------------------------
+# VALIDACIÓN
+# -------------------------------------------------
 required_columns = ["storeLocation", "purchaseMethod"]
 
-missing_cols = [c for c in required_columns if c not in df.columns]
+missing = [c for c in required_columns if c not in df.columns]
 
-if missing_cols:
-    st.error(f"❌ Columnas faltantes: {missing_cols}")
-    st.write("Columnas disponibles:", df.columns)
+if missing:
+    st.error(f"Columnas faltantes: {missing}")
+    st.write(df.columns)
     st.stop()
 
 # -------------------------------------------------
-# SIDEBAR FILTROS
+# FILTROS
 # -------------------------------------------------
 st.sidebar.header("🔎 Filtros")
 
 stores = df["storeLocation"].dropna().unique()
 
 selected_store = st.sidebar.selectbox(
-    "Seleccionar tienda",
+    "Tienda",
     sorted(stores)
 )
 
@@ -85,20 +98,24 @@ filtered_df = df[df["storeLocation"] == selected_store]
 # -------------------------------------------------
 col1, col2, col3 = st.columns(3)
 
-total_sales = len(filtered_df)
-total_items = filtered_df["items"].apply(len).sum()
-avg_items = filtered_df["items"].apply(len).mean()
+col1.metric("Ventas", len(filtered_df))
 
-col1.metric("🧾 Total Ventas", total_sales)
-col2.metric("📦 Items Vendidos", int(total_items))
-col3.metric("📊 Promedio Items/Venta", round(avg_items, 2))
+col2.metric(
+    "Métodos de compra",
+    filtered_df["purchaseMethod"].nunique()
+)
+
+col3.metric(
+    "Registros totales",
+    len(df)
+)
 
 st.divider()
 
 # -------------------------------------------------
-# TABLA DE DATOS
+# DATAFRAME (YA NO FALLA)
 # -------------------------------------------------
-st.subheader("📋 Ventas Registradas")
+st.subheader("📋 Ventas")
 
 st.dataframe(
     filtered_df,
@@ -109,31 +126,17 @@ st.dataframe(
 # -------------------------------------------------
 # GRÁFICO
 # -------------------------------------------------
-st.subheader("📈 Ventas por Método de Compra")
+st.subheader("📈 Método de Compra")
 
-purchase_counts = (
+chart = (
     filtered_df["purchaseMethod"]
     .value_counts()
-    .reset_index()
 )
 
-purchase_counts.columns = ["Metodo", "Cantidad"]
-
-st.bar_chart(
-    purchase_counts.set_index("Metodo")
-)
+st.bar_chart(chart)
 
 # -------------------------------------------------
-# DEBUG OPCIONAL (puedes borrar luego)
+# DEBUG
 # -------------------------------------------------
-with st.expander("🔧 Debug Dataset"):
-    st.write("Columnas detectadas:")
-    st.write(df.columns)
-
-    st.write("Documento ejemplo:")
-    st.write(collection.find_one())
-
-# -------------------------------------------------
-# FOOTER
-# -------------------------------------------------
-st.success("✅ Conectado correctamente a MongoDB Atlas - sample_supplies.sales")
+with st.expander("Debug"):
+    st.write(df.dtypes)
